@@ -18,6 +18,11 @@ fun dateToText(date: Date): String {
     return datetime.toString("yyyy-MM-dd")
 }
 
+fun dateTimeToText(time: DateTime): String {
+    val datetime = DateTime(time)
+    return datetime.toString("yyyy-MM-dd HH:mm")
+}
+
 fun relativeDateText(date: Date): String {
     val duration = Duration(DateTime(date), DateTime.now())
     return when {
@@ -29,6 +34,14 @@ fun relativeDateText(date: Date): String {
             "${qualifier}${duration.standardDays / 7} weeks ago"
         }
         else -> "over a month ago"
+    }
+}
+
+fun relativeTimeText(time: DateTime): String {
+    val duration = Duration(time, DateTime.now())
+    return when {
+        duration.standardHours < 72L -> "${duration.standardHours} hours ago"
+        else -> "over 72 hours ago"
     }
 }
 

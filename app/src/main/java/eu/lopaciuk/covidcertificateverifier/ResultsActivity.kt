@@ -13,12 +13,10 @@ import androidx.compose.material.icons.filled.Dangerous
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import eu.lopaciuk.covidcertificateverifier.ui.theme.CovidCertificateVerifierTheme
 import eu.lopaciuk.covidcertificateverifier.ui.theme.VerificationResultTheme
@@ -30,27 +28,28 @@ class ResultsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val qrData = this.intent.getStringArrayExtra("qrData")
-        val certRecord = CertificateRecord.fromQRCode(qrData!![0])
+        val cert = CovidCertificate.fromQRCode(qrData!![0])
 
         setContent {
             CovidCertificateVerifierTheme {
-                val entryTypeText = when (certRecord.healthCertificate.entry.getType()) {
-                    CertificateRecord.HealthCertificate.CertificateEntryType.VACCINATION -> "Vaccination"
-                    CertificateRecord.HealthCertificate.CertificateEntryType.RECOVERY -> "Recovery"
-                    CertificateRecord.HealthCertificate.CertificateEntryType.TEST -> "Test"
+                val certTypeText = when (cert) {
+                    is VaccinationCertificate -> "Vaccination"
+                    is RecoveryCertificate -> "Recovery"
+                    is TestCertificate -> "Test"
+                    else -> throw Exception("Cannot display an unsupported certificate type: ${cert.javaClass}")
                 }
-                val disease = certRecord.healthCertificate.entry.getDiseaseName()
+                val disease = cert.getDiseaseName()
 
                 Scaffold(
                     scaffoldState = rememberScaffoldState(),
                     backgroundColor = MaterialTheme.colors.background,
                     topBar = {
                         TopAppBar(
-                            title = { Text(text = "$disease $entryTypeText Certificate") }
+                            title = { Text(text = "$disease $certTypeText Certificate") }
                         )
                     },
                 ) {
-                    VaccineCertificateCompose(record = certRecord)
+                    CertificateCompose(cert)
                 }
             }
         }
@@ -58,10 +57,7 @@ class ResultsActivity : ComponentActivity() {
 }
 
 @Composable
-fun VaccineCertificateCompose(record: CertificateRecord) {
-    val cert = record.healthCertificate
-    val vax = record.healthCertificate.entry
-            as CertificateRecord.HealthCertificate.VaccinationCertificate
+fun CertificateCompose(cert: CovidCertificate) {
     val name = "${cert.givenName} ${cert.lastName}"
     val dateOfBirth = dateToText(cert.dateOfBirth)
 
@@ -70,19 +66,33 @@ fun VaccineCertificateCompose(record: CertificateRecord) {
     ) {
         Spacer(modifier = Modifier.height(8.dp))
 
-        val scope = rememberCoroutineScope()
         val context = LocalContext.current.applicationContext
         val verified = produceState(initialValue = false) {
             Executors.newSingleThreadExecutor().execute {
-                value = record.verifySignature(KeyDatabaseHelper(context))
+                value = cert.verifySignature(KeyDatabaseHelper(context))
             }
         }
 
         var statusText = "VERIFIED & VALID"
         var valid = true
-        if (DateTime(record.expiryDate).isBeforeNow) {
+        if (DateTime(cert.expiryDate).plusDays(1).isBeforeNow) {  // assume expires at 23:59,
+            valid = false                                               // so at 00:00 the next day
+            statusText = "EXPIRED ON ${dateToText(cert.expiryDate)}"
+        }
+        else if (cert is TestCertificate && !cert.isTestNegative()) {
             valid = false
-            statusText = "EXPIRED ON ${dateToText(record.expiryDate)}"
+            statusText = "NOT A NEGATIVE TEST"
+        }
+        else if (cert is RecoveryCertificate && DateTime(cert.validFrom).isAfterNow)
+        {
+            valid = false
+            statusText = "VALID FROM ${dateToText(cert.validFrom)}"
+        }
+        else if (cert is RecoveryCertificate
+            && DateTime(cert.validUntil).plusDays(1).isBeforeNow)  // assume expires at 23:59
+        {
+            valid = false
+            statusText = "EXPIRED ON ${dateToText(cert.validUntil)}"
         }
         else if (!verified.value) {
             valid = false
@@ -95,51 +105,92 @@ fun VaccineCertificateCompose(record: CertificateRecord) {
             valid = valid,
             statusText = statusText
         )
+        if (cert is VaccinationCertificate) {
+            BriefEntry(
+                label = "Dose",
+                value = "${cert.doseNo} of ${cert.dosesInSeries}"
+            )
+            BriefEntry(
+                label = "Date administered",
+                value = "${dateToText(cert.date)} (${relativeDateText(cert.date)})"
+            )
+            BriefEntry(
+                label = "Manufacturer",
+                value = cert.getManufacturerName()
+            )
+            BriefEntry(
+                label = "Vaccine product",
+                value = cert.getProductName()
+            )
+            BriefEntry(
+                label = "Prophylaxis",
+                value = cert.getProphylaxisName()
+            )
+        }
+        else if (cert is TestCertificate) {
+            BriefEntry(
+                label = "Result",
+                value = cert.getResultText()
+            )
+            BriefEntry(
+                label = "Test type",
+                value = cert.getTypeText()
+            )
+            if (cert.name != null)
+                BriefEntry(
+                    label = "Test name",
+                    value = cert.name
+                )
+            BriefEntry(
+                label = "Test device ID",
+                value = cert.deviceId
+            )
+            BriefEntry(
+                label = "Sample collection date and time",
+                value = "${dateTimeToText(cert.collectionTime)} (${relativeTimeText(cert.collectionTime)})"
+            )
+            BriefEntry(
+                label = "Testing centre/facility",
+                value = cert.facility
+            )
+        }
+        else if (cert is RecoveryCertificate) {
+            BriefEntry(
+                label = "Date of first positive result",
+                value = dateToText(cert.firstResult)
+            )
+            BriefEntry(
+                label = "Certificate validity (from/until)",
+                value = "${dateToText(cert.validFrom)}/${dateToText(cert.validUntil)}"
+            )
+        }
+
         BriefEntry(
-            label = "Dose",
-            value = "${vax.doseNo} of ${vax.dosesInSeries}"
-        )
-        BriefEntry(
-            label = "Disease targeted",
-            value = vax.getDiseaseName()
-        )
-        BriefEntry(
-            label = "Date administered",
-            value = "${dateToText(vax.date)} (${relativeDateText(vax.date)})"
+            label = "Certificate expiry date",
+            value = dateToText(cert.expiryDate)
         )
         BriefEntry(
             label = "Transliterated name",
-            value = "${cert.lastNameStd}, ${cert.givenNameStd}"
+            value = "${cert.lastNameStd}, ${cert.givenNameStd}",
+            fontFamily = FontFamily.Monospace
         )
         BriefEntry(
-            label = "Manufacturer",
-            value = vax.getManufacturerName()
-        )
-        BriefEntry(
-            label = "Vaccine product",
-            value = vax.getProductName()
-        )
-        BriefEntry(
-            label = "Prophylaxis",
-            value = vax.getProphylaxisName()
-        )
-        BriefEntry(
-            label = "Certificate expiry date",
-            value = dateToText(record.expiryDate)
+            label = "Disease targeted",
+            value = cert.getDiseaseName()
         )
         BriefEntry(
             label = "Country",
-            value = countryFromCode(vax.countryCode)
+            value = countryFromCode(cert.countryCode)
         )
         BriefEntry(
             label = "Certificate issuer",
-            value = vax.issuer
+            value = cert.entryIssuer
         )
-        BriefEntry(label = "Unique reference", value = vax.uid)
+        BriefEntry(label = "Unique reference", value = cert.uid)
         BriefEntry(
             label = "Public key ID",
-            value = "${byteArrayToHexString(record.getKid())}",
-            fontFamily = when(record.getKid()) {
+            value = "${byteArrayToHexString(cert.getKid())}",
+            fontFamily = when(cert.getKid()) {
                 null -> FontFamily.Default
                 else -> FontFamily.Monospace
             }
@@ -214,45 +265,43 @@ fun VerificationStatusBlip(valid: Boolean, statusText: String) {
     }
 }
 
-@Preview(showBackground = true)
-@Composable
-fun DefaultPreview() {
-    CovidCertificateVerifierTheme {
-        Surface(
-            color = MaterialTheme.colors.background
-        ) {
-            Column {
-                TopAppBar(
-                    title = { Text(text = "COVID-19 Vaccine Certificate") }
-                )
-                VaccineCertificateCompose(
-                    record = CertificateRecord(
-                        issuer = "Health Organisation",
-                        issueDate = dateFromPartialISO("2021-08-20"),
-                        expiryDate = dateFromPartialISO("2021-09-28"),
-                        healthCertificate = CertificateRecord.HealthCertificate(
-                            version = "1.0.1",
-                            givenName = "Erika",
-                            lastName = "Müstermann",
-                            givenNameStd = "ERIKA",
-                            lastNameStd = "MUESTERMANN",
-                            dateOfBirth = dateFromPartialISO("1980-01-01"),
-                            entry = CertificateRecord.HealthCertificate.VaccinationCertificate(
-                                countryCode = "DE",
-                                issuer = "Health Organisation",
-                                date = dateFromPartialISO("2021-08-20"),
-                                diseaseCode = "840539006",
-                                prophylaxisCode = "1119349007",
-                                doseNo = 2,
-                                dosesInSeries = 2,
-                                product = "EU/1/20/1528",
-                                manufacturer = "EU/1/20/1528",
-                                uid = "URN:UVCI:01:DE:0123456789"
-                            )
-                        )
-                    )
-                )
-            }
-        }
-    }
-}
+//@Preview(showBackground = true)
+//@Composable
+//fun DefaultPreview() {
+//    CovidCertificateVerifierTheme {
+//        Surface(
+//            color = MaterialTheme.colors.background
+//        ) {
+//            Column {
+//                TopAppBar(
+//                    title = { Text(text = "COVID-19 Vaccine Certificate") }
+//                )
+//                CertificateCompose(
+//                    record = CertificateRecord(
+//                        issuer = "Health Organisation",
+//                        issueDate = dateFromPartialISO("2021-08-20"),
+//                        expiryDate = dateFromPartialISO("2021-09-28"),
+//                        version = "1.0.1",
+//                        givenName = "Erika",
+//                        lastName = "Müstermann",
+//                        givenNameStd = "ERIKA",
+//                        lastNameStd = "MUESTERMANN",
+//                        dateOfBirth = dateFromPartialISO("1980-01-01"),
+//                        cert = CertificateRecord.VaccinationCertificate(
+//                            countryCode = "DE",
+//                            issuer = "Health Organisation",
+//                            date = dateFromPartialISO("2021-08-20"),
+//                            diseaseCode = "840539006",
+//                            prophylaxisCode = "1119349007",
+//                            doseNo = 2,
+//                            dosesInSeries = 2,
+//                            product = "EU/1/20/1528",
+//                            manufacturer = "EU/1/20/1528",
+//                            uid = "URN:UVCI:01:DE:0123456789"
+//                        )
+//                    )
+//                )
+//            }
+//        }
+//    }
+//}
